@@ -55,9 +55,12 @@ export async function onRequestPost({ request, env }) {
   }
 
   if (!res.ok) {
-    // 키 값이나 OpenAI 원문 오류는 브라우저로 보내지 않는다
+    // 키 값이나 OpenAI 원문 오류는 브라우저로 보내지 않는다 (오류 종류만 구분)
+    let errType = '';
+    try { errType = ((await res.json()).error || {}).type || ''; } catch { /* 본문 없음 */ }
     const reason = res.status === 401 ? 'API 키 오류'
-      : res.status === 429 ? '요청 한도 초과 또는 잔액 부족'
+      : errType === 'insufficient_quota' ? 'OpenAI 크레딧 부족 (결제 설정에서 충전 필요)'
+      : res.status === 429 ? '요청 한도 초과 (잠시 후 다시 시도)'
       : res.status === 404 ? '모델 이름 오류 (OPENAI_MODEL 확인)'
       : `OpenAI 오류 ${res.status}`;
     return json({ error: reason }, 502);

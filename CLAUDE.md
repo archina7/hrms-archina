@@ -94,5 +94,8 @@
 
 - `main`에 push하면 Cloudflare가 자동 배포한다. `wrangler pages deploy`로 직접 올리지 않는다.
 - 비밀값 `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`(쉼표 구분), `SESSION_SECRET`, `OPENAI_API_KEY`(+선택 `OPENAI_MODEL`)는 Cloudflare 비밀값으로만 둔다. 저장소에 넣지 않는다. 바꾸면 재배포해야 반영된다.
+- OpenAI 키를 Cloudflare에 넣을 때는 키를 명령줄에 쓰지 않고 `.dev.vars`에서 바로 넘긴다:
+  `grep '^OPENAI_API_KEY=' .dev.vars | cut -d= -f2- | npx wrangler pages secret put OPENAI_API_KEY --project-name hrms-archina`
+- 키 값을 화면에 출력하지 않는다 (cat·echo 금지, 확인은 앞 8자와 길이만).
 - 공개 저장소이므로 API 키·실제 개인정보를 커밋하지 않는다.
 - 인사 데이터는 각 사용자 브라우저(localStorage)에 저장된다. 서버에는 저장되지 않으며 사용자끼리 공유되지 않는다.
