@@ -7,8 +7,9 @@
 // 하나라도 없으면 모든 요청을 막는다 (fail closed).
 //
 // 바인딩 (wrangler.toml):
-//   ACCESS_KV  접근 권한 목록 저장소. 관리자가 화면에서 부여한 사용자·관리자와 승인 대기 요청을 보관한다.
+//   ACCESS_KV  접근 권한 저장소. 사람별 키 user:<email>, pending:<email>(7일 만료)로 보관해 동시 변경이 서로 덮어쓰지 않는다.
 //              없으면 최고 관리자만 접속할 수 있고 접근 관리 기능은 꺼진다.
+//              KV에 장애가 나도 최고 관리자는 KV를 읽기 전에 통과하므로 항상 접속할 수 있다.
 //
 // 권한: superadmin(최고 관리자, ALLOWED_EMAILS) > admin(관리자, 접근 관리 가능) > user(사용자)
 // 흐름: 구글 로그인 → 이메일 인증 확인 → 권한 있으면 입장 / 없으면 '접근 권한 요청' → 관리자가 '접근 관리'에서 승인
@@ -17,11 +18,17 @@ const COOKIE = 'hrms_session';
 const SESSION_HOURS = 12;
 const GOOGLE_CERTS = 'https://www.googleapis.com/oauth2/v3/certs';
 const GOOGLE_ISSUERS = ['accounts.google.com', 'https://accounts.google.com'];
-const ACCESS_KEY = 'access:v1';
+// KV 키: 사람마다 따로 저장해 동시에 바꿔도 서로 덮어쓰지 않는다
+const USER_PREFIX = 'user:';       // user:<email>    → { role, name, grantedBy, grantedAt }
+const PENDING_PREFIX = 'pending:'; // pending:<email> → { name, reason, requestedAt }  (7일 뒤 자동 만료)
+const LEGACY_KEY = 'access:v1';    // 이전 형식(문서 하나) — 발견되면 새 형식으로 옮기고 지운다
 const ROLES = ['user', 'admin'];
 const MAX_PENDING = 200;
-const MAX_REASON = 200;
-const EMAIL_RE = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,190}\.[a-z]{2,}$/i;
+const PENDING_TTL = 7 * 24 * 3600;
+const MAX_REASON = 150;            // 목록 조회용 메타데이터(1KB 제한) 안에 들어가도록
+const MAX_EMAIL = 254;
+// 직접 부여할 때만 쓰는 형식 검사. 작은따옴표·국제 도메인(xn--)도 허용한다.
+const GRANT_EMAIL_RE = /^[^\s@<>"]{1,64}@[^\s@<>"']+\.[^\s@<>"'.]{2,}$/;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -124,72 +131,139 @@ async function verifyGoogleIdToken(token, clientId) {
   return { email: String(claims.email || '').toLowerCase(), name: String(claims.name || '').slice(0, 60) };
 }
 
-// ===== 접근 권한 저장소 (KV) =====
-// 구조: { users: { email: { role, name, grantedBy, grantedAt } }, pending: { email: { name, reason, requestedAt } } }
-async function loadAccess(env, fresh = false) {
-  if (!env.ACCESS_KV) return { users: {}, pending: {} };
-  // 요청마다 하는 권한 확인은 60초 캐시, 관리 화면·변경 직전에는 최신값을 읽는다
-  const raw = await env.ACCESS_KV.get(ACCESS_KEY, fresh ? { type: 'json' } : { type: 'json', cacheTtl: 60 });
-  return { users: (raw && raw.users) || {}, pending: (raw && raw.pending) || {} };
+// ===== 접근 권한 저장소 (KV, 사람별 키) =====
+const ROLE_ERR = '권한은 사용자 또는 관리자만 선택할 수 있습니다.';
+const SUPER_ERR = '최고 관리자 권한은 Cloudflare 설정(ALLOWED_EMAILS)에서만 바꿀 수 있습니다.';
+
+async function putUser(env, email, rec) {
+  await env.ACCESS_KV.put(USER_PREFIX + email, JSON.stringify(rec), { metadata: rec });
+}
+async function putPending(env, email, rec) {
+  await env.ACCESS_KV.put(PENDING_PREFIX + email, JSON.stringify(rec), { metadata: rec, expirationTtl: PENDING_TTL });
+}
+async function getJson(env, key, cached = false) {
+  return env.ACCESS_KV.get(key, cached ? { type: 'json', cacheTtl: 60 } : { type: 'json' });
+}
+/** prefix로 시작하는 키 목록 (메타데이터 포함, 값은 따로 읽지 않는다) */
+async function listPrefix(env, prefix) {
+  const out = [];
+  let cursor;
+  do {
+    const r = await env.ACCESS_KV.list({ prefix, cursor });
+    for (const k of r.keys) out.push({ email: k.name.slice(prefix.length), ...(k.metadata || {}) });
+    cursor = r.list_complete ? null : r.cursor;
+  } while (cursor);
+  return out;
 }
 
-async function saveAccess(env, access) {
-  await env.ACCESS_KV.put(ACCESS_KEY, JSON.stringify(access));
+/** 이전 형식(access:v1 문서 하나)이 남아 있으면 사람별 키로 옮기고 지운다. 이미 있는 키는 덮어쓰지 않는다. */
+async function migrateLegacy(env) {
+  if (!env.ACCESS_KV) return;
+  const legacy = await env.ACCESS_KV.get(LEGACY_KEY, { type: 'json' });
+  if (!legacy) return;
+  for (const [email, u] of Object.entries(legacy.users || {})) {
+    if (u && ROLES.includes(u.role) && !(await getJson(env, USER_PREFIX + email))) await putUser(env, email, u);
+  }
+  for (const [email, p] of Object.entries(legacy.pending || {})) {
+    if (p && !(await getJson(env, USER_PREFIX + email)) && !(await getJson(env, PENDING_PREFIX + email))) {
+      await putPending(env, email, { name: p.name || '', reason: String(p.reason || '').slice(0, MAX_REASON), requestedAt: p.requestedAt || new Date().toISOString() });
+    }
+  }
+  await env.ACCESS_KV.delete(LEGACY_KEY);
 }
 
-function roleOf(env, email, access) {
+/**
+ * 권한 확인. 최고 관리자는 KV를 읽기 전에 판단하므로 KV 장애·한도 초과에도 항상 들어올 수 있다.
+ * 일반 계정은 KV 오류 시 예외가 그대로 올라간다(호출한 쪽에서 503 처리, 안전하게 막음).
+ */
+async function getRole(env, email, fresh = false) {
   if (superAdmins(env).has(email)) return 'superadmin';
-  const u = access.users[email];
+  if (!env.ACCESS_KV) return null;
+  let u = await getJson(env, USER_PREFIX + email, !fresh);
+  if (!u && fresh) { await migrateLegacy(env); u = await getJson(env, USER_PREFIX + email); }
   return u && ROLES.includes(u.role) ? u.role : null;
 }
 
-function accessState(env, access) {
-  const byDate = (k) => (a, b) => String(b[k]).localeCompare(String(a[k]));
+async function accessState(env) {
+  await migrateLegacy(env);
+  const supers = superAdmins(env);
+  const byDate = (k) => (a, b) => String(b[k] || '').localeCompare(String(a[k] || ''));
+  const [users, pending] = await Promise.all([listPrefix(env, USER_PREFIX), listPrefix(env, PENDING_PREFIX)]);
   return {
     managed: !!env.ACCESS_KV,
-    superAdmins: [...superAdmins(env)],
-    users: Object.entries(access.users).map(([email, u]) => ({ email, ...u })).sort(byDate('grantedAt')),
-    pending: Object.entries(access.pending).map(([email, p]) => ({ email, ...p })).sort(byDate('requestedAt')),
+    superAdmins: [...supers],
+    // 최고 관리자와 겹치는 부여 기록은 목록에서 숨긴다 (최고 관리자 권한이 우선)
+    users: users.filter((u) => ROLES.includes(u.role) && !supers.has(u.email)).sort(byDate('grantedAt')),
+    pending: pending.sort(byDate('requestedAt')),
   };
 }
 
-/** 관리자의 접근 관리 요청 처리. 문자열을 반환하면 오류. */
-function applyAccessAction(env, access, me, body) {
+/**
+ * 관리자의 접근 관리 요청 처리. 사람별 키 하나만 바꾸므로 다른 사람의 변경을 덮어쓰지 않는다.
+ * 반환: { error } 또는 { patch(state) } — KV 목록 조회는 조금 늦게 반영될 수 있어 방금 바꾼 내용을 응답에 직접 반영한다.
+ */
+async function doAccessAction(env, me, body) {
   const action = body && body.action;
-  const email = String((body && body.email) || '').trim().toLowerCase();
   const role = body && body.role;
   const now = new Date().toISOString();
-  if (!EMAIL_RE.test(email)) return '올바른 이메일 주소가 아닙니다.';
-  if (superAdmins(env).has(email)) return '최고 관리자 권한은 Cloudflare 설정(ALLOWED_EMAILS)에서만 바꿀 수 있습니다.';
+  const supers = superAdmins(env);
+
+  if (action === 'denyAll') {
+    const all = await listPrefix(env, PENDING_PREFIX);
+    await Promise.all(all.map((p) => env.ACCESS_KV.delete(PENDING_PREFIX + p.email)));
+    return { patch: (s) => { s.pending = []; }, count: all.length };
+  }
+
+  const email = String((body && body.email) || '').trim().toLowerCase();
+  if (!email || email.length > MAX_EMAIL || /\s/.test(email)) return { error: '이메일이 올바르지 않습니다.' };
+  const setUser = (rec) => (s) => { s.users = s.users.filter((u) => u.email !== email).concat({ email, ...rec }); s.pending = s.pending.filter((p) => p.email !== email); };
+  const dropUser = (s) => { s.users = s.users.filter((u) => u.email !== email); };
+  const dropPending = (s) => { s.pending = s.pending.filter((p) => p.email !== email); };
 
   switch (action) {
-    case 'grant':
+    case 'grant': {
+      // 직접 입력한 주소만 형식 검사 (구글이 인증해 준 요청 주소는 그대로 받는다)
+      if (!GRANT_EMAIL_RE.test(email)) return { error: '올바른 이메일 주소가 아닙니다.' };
+      if (supers.has(email)) return { error: SUPER_ERR };
+      if (!ROLES.includes(role)) return { error: ROLE_ERR };
+      const pend = await getJson(env, PENDING_PREFIX + email);
+      const prev = await getJson(env, USER_PREFIX + email);
+      const rec = { role, name: (pend && pend.name) || (prev && prev.name) || '', grantedBy: me.email, grantedAt: now };
+      await putUser(env, email, rec);
+      if (pend) await env.ACCESS_KV.delete(PENDING_PREFIX + email);
+      return { patch: setUser(rec) };
+    }
     case 'approve': {
-      if (!ROLES.includes(role)) return '권한은 사용자 또는 관리자만 선택할 수 있습니다.';
-      if (action === 'approve' && !access.pending[email]) return '승인 대기 중인 요청이 아닙니다.';
-      const prev = access.users[email] || {};
-      const name = (access.pending[email] && access.pending[email].name) || prev.name || '';
-      access.users[email] = { role, name, grantedBy: me.email, grantedAt: now };
-      delete access.pending[email];
-      return null;
+      if (!ROLES.includes(role)) return { error: ROLE_ERR };
+      const pend = await getJson(env, PENDING_PREFIX + email);
+      if (!pend) return { error: '승인 대기 중인 요청이 아닙니다. (이미 처리되었거나 7일이 지나 만료됨)' };
+      if (supers.has(email)) { await env.ACCESS_KV.delete(PENDING_PREFIX + email); return { patch: dropPending }; }
+      const rec = { role, name: pend.name || '', grantedBy: me.email, grantedAt: now };
+      await putUser(env, email, rec);
+      await env.ACCESS_KV.delete(PENDING_PREFIX + email);
+      return { patch: setUser(rec) };
     }
     case 'deny':
-      if (!access.pending[email]) return '승인 대기 중인 요청이 아닙니다.';
-      delete access.pending[email];
-      return null;
-    case 'setRole':
-      if (!access.users[email]) return '권한이 부여된 사용자가 아닙니다.';
-      if (!ROLES.includes(role)) return '권한은 사용자 또는 관리자만 선택할 수 있습니다.';
-      if (email === me.email) return '본인의 권한은 바꿀 수 없습니다.';
-      access.users[email] = { ...access.users[email], role, grantedBy: me.email, grantedAt: now };
-      return null;
+      // 최고 관리자 주소든 형식이 특이한 주소든 대기 요청은 항상 지울 수 있다
+      await env.ACCESS_KV.delete(PENDING_PREFIX + email);
+      return { patch: dropPending };
+    case 'setRole': {
+      if (supers.has(email)) return { error: SUPER_ERR };
+      if (email === me.email) return { error: '본인의 권한은 바꿀 수 없습니다.' };
+      if (!ROLES.includes(role)) return { error: ROLE_ERR };
+      const u = await getJson(env, USER_PREFIX + email);
+      if (!u) return { error: '권한이 부여된 사용자가 아닙니다.' };
+      const rec = { ...u, role, grantedBy: me.email, grantedAt: now };
+      await putUser(env, email, rec);
+      return { patch: setUser(rec) };
+    }
     case 'revoke':
-      if (!access.users[email]) return '권한이 부여된 사용자가 아닙니다.';
-      if (email === me.email) return '본인의 권한은 회수할 수 없습니다.';
-      delete access.users[email];
-      return null;
+      if (email === me.email) return { error: '본인의 권한은 회수할 수 없습니다.' };
+      // 최고 관리자와 겹치는 부여 기록도 정리할 수 있다 (최고 관리자 권한 자체는 그대로)
+      await env.ACCESS_KV.delete(USER_PREFIX + email);
+      return { patch: dropUser };
     default:
-      return '알 수 없는 작업입니다.';
+      return { error: '알 수 없는 작업입니다.' };
   }
 }
 
@@ -300,7 +374,8 @@ function deniedPage(sess, pending, managed) {
   } else if (pending) {
     const when = new Date(pending.requestedAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'short' });
     body = `<p>접근 권한 요청이 접수되어 <b>관리자 승인 대기 중</b>입니다.<br>(요청 ${escapeHtml(when)})</p>
-<p>승인되면 이 페이지를 새로고침해 입장할 수 있습니다.</p><button type="button" onclick="location.reload()">새로고침</button>`;
+<p>승인되면 이 페이지를 새로고침해 입장할 수 있습니다.<br>승인 후 반영까지 <b>최대 1분</b> 정도 걸릴 수 있습니다.<br>7일 안에 처리되지 않으면 요청이 만료되어 다시 요청할 수 있습니다.</p>
+<button type="button" onclick="location.reload()">새로고침</button>`;
   } else {
     body = `<p>이 계정은 아직 접속 권한이 없습니다.<br>아래 버튼으로 관리자에게 접근 권한을 요청하세요.</p>
 <textarea id="reason" maxlength="${MAX_REASON}" placeholder="요청 사유 (예: 공무팀 홍길동, 현장 인력 관리 업무)"></textarea>
@@ -365,7 +440,8 @@ export async function onRequest(context) {
     } catch (e) {
       return json({ error: '구글 로그인 확인 실패: ' + e.message }, 401);
     }
-    const role = roleOf(env, who.email, await loadAccess(env, true));
+    let role = null;
+    try { role = await getRole(env, who.email, true); } catch { /* KV 오류: 세션은 만들고 다음 요청에서 다시 확인 */ }
     const value = await makeSession(who.email, who.name, env.SESSION_SECRET);
     return json({ ok: true, email: who.email, allowed: !!role }, 200, { 'Set-Cookie': sessionCookie(value, SESSION_HOURS * 3600) });
   }
@@ -387,25 +463,41 @@ export async function onRequest(context) {
     if (request.method !== 'POST') return json({ error: 'POST만 허용됩니다.' }, 405);
     const bad = sameOriginJson(request, url); if (bad) return bad;
     if (!env.ACCESS_KV) return json({ error: '접근 관리 기능이 설정되지 않았습니다. 관리자에게 문의해 주세요.' }, 503);
-    const access = await loadAccess(env, true);
-    if (roleOf(env, sess.email, access)) return json({ ok: true, message: '이미 접근 권한이 있습니다.' });
-    if (access.pending[sess.email]) return json({ ok: true, message: '이미 요청되어 승인 대기 중입니다.' });
-    if (Object.keys(access.pending).length >= MAX_PENDING) return json({ error: '대기 중인 요청이 너무 많습니다. 관리자에게 문의해 주세요.' }, 429);
-    let reason = '';
-    try { reason = String((await request.json()).reason || '').trim().slice(0, MAX_REASON); } catch { /* 사유 없음 */ }
-    access.pending[sess.email] = { name: sess.name, reason, requestedAt: new Date().toISOString() };
-    await saveAccess(env, access);
+    try {
+      if (await getRole(env, sess.email, true)) return json({ ok: true, message: '이미 접근 권한이 있습니다.' });
+      if (await getJson(env, PENDING_PREFIX + sess.email)) return json({ ok: true, message: '이미 요청되어 승인 대기 중입니다.' });
+      if ((await listPrefix(env, PENDING_PREFIX)).length >= MAX_PENDING) {
+        return json({ error: '대기 중인 요청이 너무 많습니다. 잠시 후 다시 시도하거나 관리자에게 문의해 주세요.' }, 429);
+      }
+      let reason = '';
+      try { reason = String((await request.json()).reason || '').trim().slice(0, MAX_REASON); } catch { /* 사유 없음 */ }
+      await putPending(env, sess.email, { name: sess.name, reason, requestedAt: new Date().toISOString() });
+    } catch {
+      return json({ error: '권한 저장소에 일시적인 문제가 있습니다. 잠시 후 다시 시도해 주세요.' }, 503);
+    }
     return json({ ok: true, message: '접근 권한을 요청했습니다. 관리자 승인 후 입장할 수 있습니다.' });
   }
 
   // 매 요청마다 권한 확인 (회수되면 다음 요청부터 막힌다, KV 캐시로 최대 약 1분 지연)
-  let access = await loadAccess(env);
-  let role = roleOf(env, sess.email, access);
-  if (!role && env.ACCESS_KV) { access = await loadAccess(env, true); role = roleOf(env, sess.email, access); } // 방금 승인된 경우
+  // 최고 관리자는 KV를 읽지 않고 통과. 일반 계정은 KV 오류 시 503으로 안전하게 막는다.
+  let role;
+  try {
+    role = await getRole(env, sess.email);
+    if (!role && env.ACCESS_KV) role = await getRole(env, sess.email, true); // 방금 승인된 경우
+  } catch {
+    const msg = '권한 저장소에 일시적인 문제가 있습니다. 잠시 후 다시 시도해 주세요.';
+    const accept = request.headers.get('Accept') || '';
+    if (request.method === 'GET' && accept.includes('text/html')) {
+      return html(page('일시 오류', `<h1>잠시 후 다시 시도해 주세요</h1><p>${msg}</p><button type="button" onclick="location.reload()">새로고침</button>`), 503);
+    }
+    return json({ error: msg }, 503);
+  }
   if (!role) {
     const accept = request.headers.get('Accept') || '';
     if (request.method === 'GET' && accept.includes('text/html')) {
-      return html(deniedPage(sess, access.pending[sess.email], !!env.ACCESS_KV), 403);
+      let pending = null;
+      try { if (env.ACCESS_KV) pending = await getJson(env, PENDING_PREFIX + sess.email); } catch { /* 표시만 생략 */ }
+      return html(deniedPage(sess, pending, !!env.ACCESS_KV), 403);
     }
     return json({ error: `${sess.email} 계정은 접속 권한이 없습니다.` }, 403);
   }
@@ -413,24 +505,29 @@ export async function onRequest(context) {
   context.data.user = { email: sess.email, name: sess.name, role, isAdmin };
 
   if (path === '/api/me') {
-    return json({ email: sess.email, name: sess.name, role, isAdmin, accessManaged: !!env.ACCESS_KV,
-      pendingCount: isAdmin ? Object.keys(access.pending).length : 0 });
+    let pendingCount = 0;
+    if (isAdmin && env.ACCESS_KV) { try { pendingCount = (await listPrefix(env, PENDING_PREFIX)).length; } catch { /* 0으로 표시 */ } }
+    return json({ email: sess.email, name: sess.name, role, isAdmin, accessManaged: !!env.ACCESS_KV, pendingCount });
   }
 
   // 접근 관리 (관리자 전용)
   if (path === '/api/access') {
     if (!isAdmin) return json({ error: '관리자만 사용할 수 있습니다.' }, 403);
     if (!env.ACCESS_KV) return json({ error: '접근 관리 저장소(ACCESS_KV)가 설정되지 않았습니다.' }, 503);
-    if (request.method === 'GET') return json(accessState(env, await loadAccess(env, true)));
-    if (request.method !== 'POST') return json({ error: 'GET 또는 POST만 허용됩니다.' }, 405);
-    const bad = sameOriginJson(request, url); if (bad) return bad;
-    let body;
-    try { body = await request.json(); } catch { return json({ error: '잘못된 요청 형식입니다.' }, 400); }
-    const fresh = await loadAccess(env, true);
-    const err = applyAccessAction(env, fresh, sess, body);
-    if (err) return json({ error: err }, 400);
-    await saveAccess(env, fresh);
-    return json(accessState(env, fresh));
+    try {
+      if (request.method === 'GET') return json(await accessState(env));
+      if (request.method !== 'POST') return json({ error: 'GET 또는 POST만 허용됩니다.' }, 405);
+      const bad = sameOriginJson(request, url); if (bad) return bad;
+      let body;
+      try { body = await request.json(); } catch { return json({ error: '잘못된 요청 형식입니다.' }, 400); }
+      const result = await doAccessAction(env, sess, body);
+      if (result.error) return json({ error: result.error }, 400);
+      const state = await accessState(env);
+      result.patch(state); // 목록 조회가 늦게 반영돼도 방금 바꾼 내용은 바로 보이게
+      return json(state);
+    } catch {
+      return json({ error: '권한 저장소에 일시적인 문제가 있습니다. 잠시 후 다시 시도해 주세요.' }, 503);
+    }
   }
 
   const res = await next();

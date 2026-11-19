@@ -47,9 +47,10 @@
   .topbar h1 { margin: 0; font-size: 21px; }
   .topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
   #todayLabel { color: var(--muted); }
-  .user-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 13px; }
+  .user-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-size: 13px; }
   .user-chip .role { font-weight: 600; color: var(--primary); }
-  .btn.auth { background: var(--accent); border-color: var(--accent); color: #1f2937; font-weight: 600; }
+  .user-chip.err { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-bg); }
+  .btn.auth { background: var(--accent); border-color: var(--accent); color: var(--text); font-weight: 600; }
   .btn.auth .cnt { background: var(--danger); color: #fff; border-radius: 999px; padding: 0 6px; margin-left: 4px; font-size: 12px; }
   .access-add { display: flex; gap: 8px; flex-wrap: wrap; }
   .access-add input { flex: 1; min-width: 200px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
@@ -807,13 +808,16 @@ function render() {
   const pending = App.me && App.me.isAdmin ? App.me.pendingCount : 0;
   document.getElementById('nav').innerHTML = items.map(([k, l, i]) =>
     `<a href="#" data-act="nav" data-id="${k}" class="${App.view === k ? 'active' : ''}"><span aria-hidden="true">${i}</span>${l}${k === 'access' && pending ? ` (${pending})` : ''}</a>`).join('')
-    + (App.me ? '<a href="/logout"><span aria-hidden="true">🚪</span>로그아웃</a>' : '');
+    // 배포 사이트에서는 로그인 정보 확인이 실패해도 로그아웃 링크를 항상 보여 준다
+    + (location.protocol !== 'file:' ? '<a href="/logout"><span aria-hidden="true">🚪</span>로그아웃</a>' : '');
   document.getElementById('pageTitle').textContent = items.find(m => m[0] === App.view)[1];
   document.getElementById('todayLabel').textContent = '기준일 ' + today();
   document.getElementById('userBox').innerHTML = App.me
     ? `<span class="user-chip" title="구글 이메일 인증 완료">✓ ${esc(App.me.email)} · <span class="role">${esc(ROLE_LABEL[App.me.role] || App.me.role)}</span></span>`
       + (App.me.isAdmin ? ` <button class="btn auth" data-act="nav" data-id="access">🔐 접근관리 권한인증${pending ? `<span class="cnt">${pending}</span>` : ''}</button>` : '')
-    : '';
+    : App.meError
+      ? `<span class="user-chip err" title="${esc(App.meError)}">⚠ 로그인 정보 확인 실패 — 새로고침해 주세요</span>`
+      : '';
   document.getElementById('view').innerHTML = VIEWS[App.view]();
   if (focus) {
     const el = document.querySelector(`[data-filter="${focus.f}"]`);
@@ -1379,7 +1383,8 @@ async function apiJson(path, body) {
 }
 async function loadMe() {
   if (location.protocol === 'file:') return;
-  try { App.me = await apiJson('/api/me'); } catch (e) { App.meError = e.message; console.warn('로그인 정보 확인 실패:', e.message); return; }
+  try { App.me = await apiJson('/api/me'); App.meError = null; }
+  catch (e) { App.meError = e.message; console.warn('로그인 정보 확인 실패:', e.message); }
   render();
 }
 async function loadAccessState() {
@@ -1408,7 +1413,8 @@ VIEWS.access = () => {
   return `
     <div class="notice">구글 계정으로 로그인하면 <b>이메일 인증</b>을 확인한 뒤, 여기서 권한이 부여된 계정만 입장합니다.
       권한이 없는 사람은 로그인 후 '접근 권한 요청'을 보낼 수 있고, 아래 <b>승인 대기</b>에 나타납니다.</div>
-    <div class="card"><h3>승인 대기 요청 <small>(${a.pending.length}건)</small></h3>
+    <div class="card"><h3>승인 대기 요청 <small>(${a.pending.length}건 · 7일 지나면 자동 만료)</small></h3>
+      ${a.pending.length > 1 ? '<div class="toolbar"><span class="spacer"></span><button class="btn danger" data-act="access-deny-all">대기 요청 모두 거절</button></div>' : ''}
       ${table('acc-pending', [
         { key: 'name', label: '이름', render: r => esc(r.name || '-') },
         { key: 'email', label: '구글 이메일', render: r => `${esc(r.email)} ${badge('✓ 이메일 인증', 'ok')}` },
@@ -1449,10 +1455,16 @@ ACTIONS['access-deny'] = email => {
   if (!confirm(`${email}의 접근 요청을 거절할까요?`)) return;
   accessAction({ action: 'deny', email }, '요청을 거절했습니다.');
 };
+ACTIONS['access-deny-all'] = () => {
+  const n = App.access.pending.length;
+  if (!confirm(`대기 중인 접근 요청 ${n}건을 모두 거절할까요?`)) return;
+  accessAction({ action: 'denyAll' }, `대기 요청 ${n}건을 모두 거절했습니다.`);
+};
 ACTIONS['access-grant'] = () => {
   const email = document.getElementById('accEmail').value.trim().toLowerCase();
   const role = document.getElementById('accRole').value;
-  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) { toast('올바른 이메일 주소를 입력하세요.'); return; }
+  // 서버 검사와 같은 규칙 (작은따옴표·국제 도메인 허용)
+  if (!/^[^\s@<>"]{1,64}@[^\s@<>"']+\.[^\s@<>"'.]{2,}$/.test(email)) { toast('올바른 이메일 주소를 입력하세요.'); return; }
   if (role === 'admin' && !confirm(`${email} 계정에 관리자 권한을 줄까요?`)) return;
   accessAction({ action: 'grant', email, role }, `${email}에 ${ROLE_LABEL[role]} 권한을 부여했습니다.`);
 };

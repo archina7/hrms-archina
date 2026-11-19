@@ -5,6 +5,8 @@ pages_build_output_dir = "."
 compatibility_date = "2026-11-01"
 
 # 접근 권한 목록 저장소 (functions/_middleware.js의 접근 관리)
+# 주의: 이 바인딩은 모든 배포 환경에 적용된다. 미리보기(preview) 배포는 프로젝트 설정에서 꺼 두었다
+# (preview_deployment_setting = none). 미리보기를 켜려면 [env.preview]에 별도 KV를 먼저 지정할 것.
 [[kv_namespaces]]
 binding = "ACCESS_KV"
 id = "1d5606097cce4fd294688be3ea6c7110"
