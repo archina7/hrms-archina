@@ -20,8 +20,9 @@
 ├── data/sample.json    # 가상 샘플 데이터 (자동 생성 — 직접 수정 금지)
 ├── tools/gen-sample.js # sample.json 생성 스크립트
 ├── functions/
-│   ├── _middleware.js  # 구글 로그인 보호 (Cloudflare Pages Functions)
+│   ├── _middleware.js  # 구글 로그인 + 접근 권한 관리 (/auth/*, /api/me, /api/access)
 │   └── api/chat.js     # 챗봇 AI 모드 → OpenAI 중계 (OPENAI_API_KEY 사용)
+├── wrangler.toml       # Pages 설정 (출력 폴더, KV 바인딩 ACCESS_KV) — 비밀값 금지
 ├── .dev.vars           # 로컬 비밀값 (git 제외 — 커밋 금지)
 ├── .dev.vars.example   # 비밀값 항목 예시 (실제 값 없음)
 ├── docs/               # 기획·화면 설계 문서
@@ -61,9 +62,20 @@
 - 챗봇은 **조회 전용** — 데이터 등록·수정·삭제는 하지 않는다.
 - 자격증·교육은 **만료/기한 30일 전**부터 대시보드에 경고 표시.
 
+## 접근 관리 (구글 이메일 인증 + 권한 부여)
+- 권한 3단계: **최고 관리자**(Cloudflare 비밀값 `ALLOWED_EMAILS`, 화면에서 변경 불가) > **관리자**(접근 관리 가능) > **사용자**
+- 흐름: 구글 로그인 → 서버가 ID 토큰 서명·`email_verified` 확인 → 권한 있으면 입장
+  - 권한 없으면 '접근 권한이 필요합니다' 화면에서 **접근 권한 요청**(사유 입력) → 관리자 승인 대기
+  - 관리자는 상단 **🔐 접근관리 권한인증** 버튼(또는 메뉴 '접근 관리')에서 승인(사용자/관리자)·거절·직접 부여·권한 변경·회수
+- 저장소: Cloudflare KV `ACCESS_KV` (네임스페이스 `hrms-access`), 키 `access:v1` = `{ users, pending }`
+- 권한 판단은 **서버(`_middleware.js`)에서만** 한다. 화면(`index.html`)은 `/api/me`, `/api/access` 결과를 표시만 한다.
+- 매 요청마다 권한을 확인한다. 회수는 KV 캐시 때문에 최대 약 1분 뒤 반영.
+- 본인 권한 변경·회수, 최고 관리자 변경은 서버가 거부한다. 다른 사람이 쓴 이름·사유는 반드시 `esc()`로 표시한다.
+- 로컬 시험: `npx wrangler pages dev --persist-to <임시폴더>` (로컬 KV 사용, 실제 KV와 분리)
+
 ## UI 규칙
 - 모든 화면 문구는 **한국어**
-- 레이아웃: 좌측 사이드 메뉴(대시보드 / 사원 관리 / 현장 배치 / 자격·교육 / 근태 / 급여 / 설정) + 우측 콘텐츠 (모바일은 상단 가로 메뉴)
+- 레이아웃: 좌측 사이드 메뉴(대시보드 / 사원 관리 / 현장 배치 / 자격·교육 / 근태 / 급여 / 설정 / 접근 관리(관리자만)) + 우측 콘텐츠 (모바일은 상단 가로 메뉴)
 - 날짜 표기 `YYYY-MM-DD`, 금액은 천 단위 콤마 + "원" (예: `3,250,000원`)
 - 모바일 화면(폭 375px)에서도 사용 가능해야 함 (현장 사용)
 - 목록 화면은 검색·필터·정렬 제공
@@ -90,11 +102,13 @@
 |---|---|
 | GitHub 저장소 | https://github.com/archina7/hrms-archina (브랜치 `main`, 공개 저장소) |
 | Cloudflare Pages | 프로젝트 `hrms-archina` → https://hrms-archina.pages.dev (Git 연동, 빌드 없음, 출력 폴더 `/`) |
-| 접속 제한 | `functions/_middleware.js` — 구글 로그인 후 허용 이메일만 접속 |
+| 접속 제한 | `functions/_middleware.js` — 구글 로그인 후 권한 있는 계정만 접속 (위 '접근 관리' 참고) |
+| 권한 저장소 | Cloudflare KV `hrms-access` (id `1d5606097cce4fd294688be3ea6c7110`), `wrangler.toml`에서 `ACCESS_KV`로 연결 |
 
 - `main`에 push하면 Cloudflare가 자동 배포한다. `wrangler pages deploy`로 직접 올리지 않는다.
 - 배포 확인: `npx wrangler pages deployment list --project-name hrms-archina`
-- 접속 허용 이메일 변경 (쉼표 구분, 바꾼 뒤 재배포해야 반영):
+- 일반 사용자·관리자 권한은 사이트의 '접근 관리' 화면에서 부여한다 (재배포 불필요).
+- 최고 관리자 이메일 변경 (쉼표 구분, 바꾼 뒤 재배포해야 반영):
   `printf 'a@gmail.com,b@gmail.com' | npx wrangler pages secret put ALLOWED_EMAILS --project-name hrms-archina`
 - 구글 로그인은 Google Cloud Console의 OAuth 클라이언트 "승인된 JavaScript 원본"에 `https://hrms-archina.pages.dev`가 있어야 동작한다.
 - 비밀값 `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`(쉼표 구분), `SESSION_SECRET`, `OPENAI_API_KEY`(+선택 `OPENAI_MODEL`)는 Cloudflare 비밀값으로만 둔다. 저장소에 넣지 않는다. 바꾸면 재배포해야 반영된다.

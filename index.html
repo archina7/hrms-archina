@@ -45,7 +45,15 @@
   main { flex: 1; min-width: 0; padding: 20px 24px 90px; }
   .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; }
   .topbar h1 { margin: 0; font-size: 21px; }
-  .topbar span { color: var(--muted); }
+  .topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+  #todayLabel { color: var(--muted); }
+  .user-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 13px; }
+  .user-chip .role { font-weight: 600; color: var(--primary); }
+  .btn.auth { background: var(--accent); border-color: var(--accent); color: #1f2937; font-weight: 600; }
+  .btn.auth .cnt { background: var(--danger); color: #fff; border-radius: 999px; padding: 0 6px; margin-left: 4px; font-size: 12px; }
+  .access-add { display: flex; gap: 8px; flex-wrap: wrap; }
+  .access-add input { flex: 1; min-width: 200px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .access-add select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
 
   /* ----- 공통 컴포넌트 ----- */
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); margin-bottom: var(--gap); }
@@ -187,7 +195,7 @@
     <nav id="nav" aria-label="주 메뉴"></nav>
   </aside>
   <main>
-    <header class="topbar"><h1 id="pageTitle"></h1><span id="todayLabel"></span></header>
+    <header class="topbar"><h1 id="pageTitle"></h1><div class="topbar-right"><span id="todayLabel"></span><span id="userBox"></span></div></header>
     <section id="view"></section>
   </main>
 </div>
@@ -620,6 +628,8 @@ const App = {
   filters: {},
   sort: {},
   chat: { open: false, busy: false, turns: [] },
+  me: null,       // 로그인 사용자 { email, name, role, isAdmin, pendingCount } — 배포 사이트에서만
+  access: null,   // 접근 관리 상태 { superAdmins, users, pending } — 관리자만
 };
 
 function loadData() {
@@ -782,6 +792,9 @@ const MENU = [
   ['payroll', '급여', '💰'],
   ['settings', '설정', '⚙️'],
 ];
+const ACCESS_MENU = ['access', '접근 관리', '🔐'];
+function menuItems() { return App.me && App.me.isAdmin ? [...MENU, ACCESS_MENU] : MENU; }
+const ROLE_LABEL = { superadmin: '최고 관리자', admin: '관리자', user: '사용자' };
 const VIEWS = {};
 const ACTIONS = {};
 
@@ -789,18 +802,25 @@ function render() {
   const active = document.activeElement;
   const focus = active && active.dataset && active.dataset.filter
     ? { f: active.dataset.filter, pos: (() => { try { return active.selectionStart; } catch (e) { return null; } })() } : null;
-  document.getElementById('nav').innerHTML = MENU.map(([k, l, i]) =>
-    `<a href="#" data-act="nav" data-id="${k}" class="${App.view === k ? 'active' : ''}"><span aria-hidden="true">${i}</span>${l}</a>`).join('')
-    + (location.protocol === 'https:' ? '<a href="/logout"><span aria-hidden="true">🚪</span>로그아웃</a>' : '');
-  document.getElementById('pageTitle').textContent = MENU.find(m => m[0] === App.view)[1];
+  const items = menuItems();
+  if (!items.some(m => m[0] === App.view)) App.view = 'dashboard';
+  const pending = App.me && App.me.isAdmin ? App.me.pendingCount : 0;
+  document.getElementById('nav').innerHTML = items.map(([k, l, i]) =>
+    `<a href="#" data-act="nav" data-id="${k}" class="${App.view === k ? 'active' : ''}"><span aria-hidden="true">${i}</span>${l}${k === 'access' && pending ? ` (${pending})` : ''}</a>`).join('')
+    + (App.me ? '<a href="/logout"><span aria-hidden="true">🚪</span>로그아웃</a>' : '');
+  document.getElementById('pageTitle').textContent = items.find(m => m[0] === App.view)[1];
   document.getElementById('todayLabel').textContent = '기준일 ' + today();
+  document.getElementById('userBox').innerHTML = App.me
+    ? `<span class="user-chip" title="구글 이메일 인증 완료">✓ ${esc(App.me.email)} · <span class="role">${esc(ROLE_LABEL[App.me.role] || App.me.role)}</span></span>`
+      + (App.me.isAdmin ? ` <button class="btn auth" data-act="nav" data-id="access">🔐 접근관리 권한인증${pending ? `<span class="cnt">${pending}</span>` : ''}</button>` : '')
+    : '';
   document.getElementById('view').innerHTML = VIEWS[App.view]();
   if (focus) {
     const el = document.querySelector(`[data-filter="${focus.f}"]`);
     if (el) { el.focus(); try { if (focus.pos != null) el.setSelectionRange(focus.pos, focus.pos); } catch (e) { /* 날짜 입력 등 */ } }
   }
 }
-ACTIONS.nav = id => { App.view = id; render(); window.scrollTo(0, 0); };
+ACTIONS.nav = id => { App.view = id; render(); window.scrollTo(0, 0); if (id === 'access') loadAccessState(); };
 ACTIONS.sort = id => {
   const [tid, key] = id.split('|');
   const s = App.sort[tid];
@@ -1349,6 +1369,104 @@ ACTIONS['pay-export'] = () => {
   }));
 };
 
+// ===== [접근 관리 (관리자)] =====
+// 서버(functions/_middleware.js)의 /api/me, /api/access를 사용한다. 권한 판단은 서버에서 하고 화면은 표시만 한다.
+async function apiJson(path, body) {
+  const res = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `오류 ${res.status}`);
+  return data;
+}
+async function loadMe() {
+  if (location.protocol === 'file:') return;
+  try { App.me = await apiJson('/api/me'); } catch (e) { App.meError = e.message; console.warn('로그인 정보 확인 실패:', e.message); return; }
+  render();
+}
+async function loadAccessState() {
+  if (!App.me || !App.me.isAdmin) return;
+  try {
+    App.access = await apiJson('/api/access');
+    App.me.pendingCount = App.access.pending.length;
+  } catch (e) { App.access = { error: e.message }; }
+  render();
+}
+async function accessAction(body, okMsg) {
+  try {
+    App.access = await apiJson('/api/access', body);
+    App.me.pendingCount = App.access.pending.length;
+    render(); toast(okMsg);
+  } catch (e) { toast('실패: ' + e.message); }
+}
+/** 서버에 UTC로 저장된 시각을 브라우저 현지 시각(한국 시간)으로 표시 */
+const dt = s => { if (!s) return '-'; const d = new Date(s); return isNaN(d) ? esc(s) : esc(`${fmtDate(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`); };
+VIEWS.access = () => {
+  if (!App.me || !App.me.isAdmin) return '<div class="notice warn">관리자만 볼 수 있는 화면입니다.</div>';
+  const a = App.access;
+  if (!a) return '<div class="empty">접근 권한 목록을 불러오는 중…</div>';
+  if (a.error) return `<div class="notice warn">불러오기 실패: ${esc(a.error)}</div><button class="btn" data-act="access-refresh">다시 시도</button>`;
+  const me = App.me.email;
+  return `
+    <div class="notice">구글 계정으로 로그인하면 <b>이메일 인증</b>을 확인한 뒤, 여기서 권한이 부여된 계정만 입장합니다.
+      권한이 없는 사람은 로그인 후 '접근 권한 요청'을 보낼 수 있고, 아래 <b>승인 대기</b>에 나타납니다.</div>
+    <div class="card"><h3>승인 대기 요청 <small>(${a.pending.length}건)</small></h3>
+      ${table('acc-pending', [
+        { key: 'name', label: '이름', render: r => esc(r.name || '-') },
+        { key: 'email', label: '구글 이메일', render: r => `${esc(r.email)} ${badge('✓ 이메일 인증', 'ok')}` },
+        { key: 'reason', label: '요청 사유', render: r => esc(r.reason || '-') },
+        { key: 'requestedAt', label: '요청 일시', render: r => dt(r.requestedAt) },
+        { label: '처리', render: r => `<div class="actions">${btn('사용자로 승인', 'access-approve', r.email)}${btn('관리자로 승인', 'access-approve-admin', r.email)}${btn('거절', 'access-deny', r.email, 'danger')}</div>` },
+      ], a.pending)}
+    </div>
+    <div class="card"><h3>권한 직접 부여</h3>
+      <div class="access-add">
+        <input id="accEmail" type="email" placeholder="구글 이메일 (예: name@gmail.com)" aria-label="부여할 구글 이메일">
+        <select id="accRole" aria-label="권한"><option value="user">사용자</option><option value="admin">관리자 (접근 관리 가능)</option></select>
+        <button class="btn primary" data-act="access-grant">권한 부여</button>
+      </div>
+      <p class="note">부여된 계정은 그 구글 계정으로 로그인해 이메일 인증을 통과해야 입장할 수 있습니다.</p>
+    </div>
+    <div class="card"><h3>접근 허용 계정 <small>(최고 관리자 ${a.superAdmins.length}명 · 부여 ${a.users.length}명)</small></h3>
+      ${table('acc-users', [
+        { key: 'email', label: '구글 이메일', render: r => esc(r.email) + (r.email === me ? ' <span class="muted">(나)</span>' : '') },
+        { key: 'name', label: '이름', render: r => esc(r.name || '-') },
+        { key: 'role', label: '권한', render: r => badge(ROLE_LABEL[r.role] || r.role, r.role === 'superadmin' ? 'danger' : r.role === 'admin' ? 'warn' : 'info') },
+        { key: 'grantedBy', label: '부여자', render: r => esc(r.grantedBy || 'Cloudflare 설정') },
+        { key: 'grantedAt', label: '부여 일시', render: r => r.grantedAt ? dt(r.grantedAt) : '-' },
+        { label: '관리', render: r => r.role === 'superadmin' || r.email === me ? '<span class="muted">변경 불가</span>'
+            : `<div class="actions">${btn(r.role === 'admin' ? '사용자로 변경' : '관리자로 변경', 'access-role', r.email)}${btn('권한 회수', 'access-revoke', r.email, 'danger')}</div>` },
+      ], [...a.superAdmins.map(email => ({ email, role: 'superadmin' })), ...a.users])}
+      <p class="note">최고 관리자는 Cloudflare 비밀값 ALLOWED_EMAILS로 관리되며 이 화면에서 바꿀 수 없습니다. 권한 회수는 최대 약 1분 안에 반영됩니다.</p>
+      <div class="toolbar" style="margin-top:8px"><button class="btn" data-act="access-refresh">새로고침</button></div>
+    </div>`;
+};
+ACTIONS['access-refresh'] = () => { App.access = null; render(); loadAccessState(); };
+ACTIONS['access-approve'] = email => accessAction({ action: 'approve', email, role: 'user' }, `${email} 사용자 권한을 승인했습니다.`);
+ACTIONS['access-approve-admin'] = email => {
+  if (!confirm(`${email} 계정을 관리자로 승인할까요? 관리자는 다른 사람의 접근 권한을 관리할 수 있습니다.`)) return;
+  accessAction({ action: 'approve', email, role: 'admin' }, `${email} 관리자 권한을 승인했습니다.`);
+};
+ACTIONS['access-deny'] = email => {
+  if (!confirm(`${email}의 접근 요청을 거절할까요?`)) return;
+  accessAction({ action: 'deny', email }, '요청을 거절했습니다.');
+};
+ACTIONS['access-grant'] = () => {
+  const email = document.getElementById('accEmail').value.trim().toLowerCase();
+  const role = document.getElementById('accRole').value;
+  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) { toast('올바른 이메일 주소를 입력하세요.'); return; }
+  if (role === 'admin' && !confirm(`${email} 계정에 관리자 권한을 줄까요?`)) return;
+  accessAction({ action: 'grant', email, role }, `${email}에 ${ROLE_LABEL[role]} 권한을 부여했습니다.`);
+};
+ACTIONS['access-role'] = email => {
+  const u = App.access.users.find(x => x.email === email);
+  const role = u.role === 'admin' ? 'user' : 'admin';
+  if (!confirm(`${email} 권한을 '${ROLE_LABEL[role]}'(으)로 바꿀까요?`)) return;
+  accessAction({ action: 'setRole', email, role }, '권한을 변경했습니다.');
+};
+ACTIONS['access-revoke'] = email => {
+  if (!confirm(`${email}의 접근 권한을 회수할까요? 다음 접속부터 입장할 수 없습니다.`)) return;
+  accessAction({ action: 'revoke', email }, '권한을 회수했습니다.');
+};
+
 // ===== [설정] =====
 VIEWS.settings = () => {
   const mode = chatMode();
@@ -1715,6 +1833,7 @@ document.getElementById('chatChips').innerHTML = CHAT_EXAMPLES.map(q => `<button
 
 loadData();
 render();
+loadMe().then(() => { if (App.me && App.me.isAdmin) loadAccessState(); });
 </script>
 </body>
 </html>

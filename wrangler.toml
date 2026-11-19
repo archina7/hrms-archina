@@ -1,0 +1,10 @@
+# Cloudflare Pages 설정 (Git 연동 배포와 로컬 wrangler pages dev 모두 이 파일을 사용)
+# 비밀값(OPENAI_API_KEY, GOOGLE_CLIENT_ID, ALLOWED_EMAILS, SESSION_SECRET)은 여기에 넣지 않는다.
+name = "hrms-archina"
+pages_build_output_dir = "."
+compatibility_date = "2026-11-01"
+
+# 접근 권한 목록 저장소 (functions/_middleware.js의 접근 관리)
+[[kv_namespaces]]
+binding = "ACCESS_KV"
+id = "1d5606097cce4fd294688be3ea6c7110"
