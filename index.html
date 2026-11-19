@@ -1235,7 +1235,7 @@ ACTIONS['pay-export'] = () => {
 
 // ===== [설정] =====
 VIEWS.settings = () => {
-  const mode = Store.get('chatMode', 'rule');
+  const mode = chatMode();
   const counts = COLLECTIONS.map(c => `${c} ${App.data[c].length}`).join(' · ');
   return `
     <div class="card"><h3>데이터 백업·복원</h3>
@@ -1305,8 +1305,10 @@ ACTIONS['chat-logs-clear'] = () => {
 const CHAT_EXAMPLES = ['자격증 만료 예정자 알려줘', '판교 현장 배치 인원 몇 명이야?', '홍길동 이번 달 출역일수는?', '안전교육 미이수자 있어?', '연차 규정 알려줘', '전체 인원 현황'];
 const GENERIC_SITE_WORDS = ['신축공사', '증축공사', '보수공사', '공사', '현장', '신축', '증축', '보수'];
 
-function chatMode() { return Store.get('chatMode', 'rule') === 'ai' ? 'ai' : 'rule'; }
-function updateChatMode() { document.getElementById('chatModeLabel').textContent = chatMode() === 'ai' ? 'AI 모드' : '기본 모드'; }
+/** 배포 사이트(https)는 기본이 AI 모드(OpenAI), 파일로 직접 열면 서버 함수가 없으므로 기본 모드. 설정에서 고른 값이 우선. */
+function defaultChatMode() { return location.protocol === 'file:' ? 'rule' : 'ai'; }
+function chatMode() { return Store.get('chatMode', defaultChatMode()) === 'ai' ? 'ai' : 'rule'; }
+function updateChatMode() { document.getElementById('chatModeLabel').textContent = chatMode() === 'ai' ? 'AI 모드 (OpenAI)' : '기본 모드'; }
 function targetMonth(q, t) {
   if (/지난\s?달|전월|저번\s?달/.test(q)) return prevMonth(monthOf(t));
   const m = q.match(/(\d{1,2})\s*월/);
@@ -1462,8 +1464,18 @@ function ruleBot(q) {
 function aiContextData() {
   const d = App.data, t = today(), ym = monthOf(t), { start, end } = monthRange(ym);
   const pm = prevMonth(ym), prevPay = d.payroll.filter(p => p.month === pm);
+  const active = d.employees.filter(e => e.status === '재직');
   return {
     기준일: t,
+    // 숫자는 AI가 세지 않도록 미리 계산해서 준다
+    요약: {
+      재직인원: active.length,
+      퇴사인원: d.employees.length - active.length,
+      고용형태별_재직: Object.fromEntries(EMP_TYPES.map(k => [k, active.filter(e => e.empType === k).length])),
+      부서별_재직: Object.fromEntries(DEPTS.map(k => [k, active.filter(e => e.dept === k).length]).filter(x => x[1])),
+      현장미배치_재직: active.filter(e => !activeAssignment(d, e.empNo, t)).length,
+      [`${ym}_오늘까지_출역연인원`]: d.attendance.filter(a => a.present && a.date >= start && a.date <= end).length,
+    },
     사원: d.employees.map(e => {
       const a = activeAssignment(d, e.empNo, t);
       const att = d.attendance.filter(x => x.empNo === e.empNo && x.present && x.date >= start && x.date <= end);
@@ -1482,7 +1494,9 @@ async function aiBot(q) {
   if (location.protocol === 'file:') throw new Error('파일로 직접 열면 AI 모드를 쓸 수 없음 — 배포 사이트나 wrangler pages dev에서 사용');
   const system = `당신은 건설회사 인사관리시스템의 인사 챗봇입니다. 아래 JSON 데이터만 근거로 한국어로 간결하게 답하세요.
 - 데이터에 없는 내용은 지어내지 말고 "해당 정보를 찾을 수 없습니다"라고 답하세요.
-- 숫자·명단은 데이터에서 정확히 세어 답하세요. 금액은 천 단위 콤마와 '원', 날짜는 YYYY-MM-DD.
+- 인원수 등 집계는 '요약' 항목의 값을 그대로 쓰세요. '인원'은 별도 언급이 없으면 상태가 '재직'인 사람만 뜻합니다.
+- 명단은 데이터에서 정확히 골라 답하세요. 금액은 천 단위 콤마와 '원', 날짜는 YYYY-MM-DD.
+- '만료 임박'은 상태가 '임박'인 것, '만료'는 상태가 '만료'인 것입니다. 둘 다 물으면 구분해서 답하세요.
 - 데이터 등록·수정·삭제 요청에는 "챗봇은 조회만 가능합니다. 해당 메뉴에서 직접 처리해 주세요"라고 안내하세요.
 - 일반 노무 질문(연차 등)은 근로기준법 기준으로 간단히 답하고, 정확한 적용은 담당자 확인이 필요하다고 덧붙이세요.
 - 마크다운 표는 쓰지 말고 짧은 문장과 '- ' 목록만 사용하세요.
@@ -1547,7 +1561,8 @@ ACTIONS['chat-toggle'] = () => {
   if (App.chat.open) {
     updateChatMode();
     if (!document.getElementById('chatMsgs').children.length) {
-      appendMsg('bot', `안녕하세요! 인사 챗봇입니다. 저장된 인사 데이터를 조회해 답해 드려요.<br><span class="muted">예시 질문을 누르거나 직접 입력해 보세요.</span>`);
+      const modeNote = chatMode() === 'ai' ? 'AI(OpenAI) 모드로 답합니다.' : '기본 모드로 답합니다. (AI 모드는 배포 사이트에서 사용)';
+      appendMsg('bot', `안녕하세요! 인사 챗봇입니다. 저장된 인사 데이터를 조회해 답해 드려요.<br><span class="muted">${modeNote} 예시 질문을 누르거나 직접 입력해 보세요.</span>`);
     }
     document.getElementById('chatInput').focus();
   }
