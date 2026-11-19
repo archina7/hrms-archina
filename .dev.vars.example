@@ -1,0 +1,14 @@
+# 로컬 개발용 비밀값 예시 파일 (이 파일은 GitHub에 올라갑니다 — 실제 값을 넣지 마세요)
+# 사용법: 이 파일을 복사해 .dev.vars 를 만들고 실제 값을 넣습니다. .dev.vars 는 git에서 제외됩니다.
+#   cp .dev.vars.example .dev.vars
+# 배포 사이트는 이 파일이 아니라 Cloudflare 비밀값을 씁니다:
+#   npx wrangler pages secret put OPENAI_API_KEY --project-name hrms-archina
+
+# 인사 챗봇 AI 모드 (functions/api/chat.js)
+OPENAI_API_KEY=여기에_OpenAI_API_키
+OPENAI_MODEL=gpt-4o-mini
+
+# 구글 로그인 (functions/_middleware.js)
+GOOGLE_CLIENT_ID=188719662378-1ilqepmr1rsmuiqagcb0ne422394nlem.apps.googleusercontent.com
+ALLOWED_EMAILS=허용할@gmail.com
+SESSION_SECRET=32자_이상_임의_문자열

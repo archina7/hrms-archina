@@ -1,3 +1,14 @@
-.wrangler/
+# 비밀값 파일 — 절대 커밋하지 않음
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# 도구 캐시
+.wrangler/
 node_modules/

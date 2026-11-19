@@ -19,6 +19,11 @@
 ├── index.html          # 앱 본체 (모든 화면과 로직)
 ├── data/sample.json    # 가상 샘플 데이터 (자동 생성 — 직접 수정 금지)
 ├── tools/gen-sample.js # sample.json 생성 스크립트
+├── functions/
+│   ├── _middleware.js  # 구글 로그인 보호 (Cloudflare Pages Functions)
+│   └── api/chat.js     # 챗봇 AI 모드 → OpenAI 중계 (OPENAI_API_KEY 사용)
+├── .dev.vars           # 로컬 비밀값 (git 제외 — 커밋 금지)
+├── .dev.vars.example   # 비밀값 항목 예시 (실제 값 없음)
 ├── docs/               # 기획·화면 설계 문서
 ├── CLAUDE.md
 └── 작업규칙.md
@@ -44,11 +49,13 @@
 화면 우측 하단 플로팅 버튼으로 여는 대화창. 앱에 저장된 데이터를 자연어로 조회한다.
 - 질문 예시: "이번 달 자격증 만료 예정자 알려줘", "OO현장 배치 인원 몇 명이야?", "홍길동 이번 달 출역일수는?", "연차 규정 알려줘"
 - **기본 모드(규칙 기반)**: 키워드·패턴 매칭으로 질문 의도를 분류 → `localStorage` 데이터를 조회해 답변. 외부 통신 없음.
-- **AI 모드(선택)**: 설정 화면에서 사용자가 Claude API 키를 입력한 경우에만 활성화.
-  - 모델: `claude-opus-5-5` (effort `low`), `anthropic-version: 2026-10-21`
-  - 거절 대비 `fallbacks: "default"` + beta 헤더 `server-side-fallback-2026-07-01`
-  - 브라우저 직접 호출(`anthropic-dangerous-direct-browser-access: true` 헤더)
-  - API 키는 코드에 절대 넣지 않고, 사용자 브라우저 `localStorage`(`hrms_apiKey`)에만 저장
+- **AI 모드(선택)**: OpenAI를 서버 경유로 호출. 설정 화면에서 모드만 고른다.
+  - 흐름: 브라우저 `aiBot()` → `/api/chat` (`functions/api/chat.js`, 구글 로그인 보호) → OpenAI Chat Completions
+  - 키: `OPENAI_API_KEY`, 모델: `OPENAI_MODEL`(기본 `gpt-4o-mini`) — **서버 환경 변수로만** 관리
+    - 로컬: `.dev.vars` (git 제외, `.dev.vars.example`을 복사해 작성)
+    - 배포: Cloudflare 비밀값 `npx wrangler pages secret put OPENAI_API_KEY --project-name hrms-archina`
+  - API 키를 `index.html`·저장소·브라우저 저장소에 절대 넣지 않는다. `.git/hooks/pre-commit`이 비밀 파일과 `sk-...` 문자열 커밋을 막는다.
+  - `index.html`을 파일로 직접 열면 AI 모드가 동작하지 않는다 (서버 함수가 없음) → 자동으로 기본 모드 답변
   - 질문에 필요한 **최소한의 요약 데이터**만 전송 (연락처·생년월일·계좌 등 민감정보는 전송 금지)
 - 답변 못 하는 질문은 "해당 정보를 찾을 수 없습니다"라고 답하고, 관련 메뉴로 이동 링크를 제시한다.
 - 챗봇은 **조회 전용** — 데이터 등록·수정·삭제는 하지 않는다.
@@ -86,6 +93,6 @@
 | 접속 제한 | `functions/_middleware.js` — 구글 로그인 후 허용 이메일만 접속 |
 
 - `main`에 push하면 Cloudflare가 자동 배포한다. `wrangler pages deploy`로 직접 올리지 않는다.
-- 로그인 설정값 `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`(쉼표 구분), `SESSION_SECRET`은 Cloudflare 비밀값으로만 둔다. 저장소에 넣지 않는다. 바꾸면 재배포해야 반영된다.
+- 비밀값 `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`(쉼표 구분), `SESSION_SECRET`, `OPENAI_API_KEY`(+선택 `OPENAI_MODEL`)는 Cloudflare 비밀값으로만 둔다. 저장소에 넣지 않는다. 바꾸면 재배포해야 반영된다.
 - 공개 저장소이므로 API 키·실제 개인정보를 커밋하지 않는다.
 - 인사 데이터는 각 사용자 브라우저(localStorage)에 저장된다. 서버에는 저장되지 않으며 사용자끼리 공유되지 않는다.

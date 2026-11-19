@@ -205,7 +205,8 @@ export async function onRequest(context) {
   }
 
   // 서버 코드 파일은 정적 파일로 내보내지 않는다
-  if (path === '/functions' || path.startsWith('/functions/')) {
+  // 점(.)으로 시작하는 파일·폴더(.dev.vars, .git 등 비밀값·설정 파일)도 내보내지 않는다
+  if (path === '/functions' || path.startsWith('/functions/') || path.split('/').some((seg) => seg.startsWith('.'))) {
     return new Response('Not found', { status: 404 });
   }
 

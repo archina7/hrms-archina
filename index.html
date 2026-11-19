@@ -521,6 +521,7 @@ const App = {
 };
 
 function loadData() {
+  Store.remove('apiKey'); // 이전 버전에서 브라우저에 저장했던 API 키 정리 (키는 이제 서버에서만 관리)
   const ver = Store.get('schemaVersion', null);
   if (ver == null) { resetToSample(); return; }
   COLLECTIONS.forEach(c => { const v = Store.get(c, []); App.data[c] = Array.isArray(v) ? v : []; });
@@ -1235,7 +1236,6 @@ ACTIONS['pay-export'] = () => {
 // ===== [설정] =====
 VIEWS.settings = () => {
   const mode = Store.get('chatMode', 'rule');
-  const hasKey = !!Store.get('apiKey', '');
   const counts = COLLECTIONS.map(c => `${c} ${App.data[c].length}`).join(' · ');
   return `
     <div class="card"><h3>데이터 백업·복원</h3>
@@ -1255,19 +1255,16 @@ VIEWS.settings = () => {
         <label class="field"><span>답변 모드</span>
           <select id="chatModeSel">
             <option value="rule" ${mode === 'rule' ? 'selected' : ''}>기본 모드 (규칙 기반 · 외부 통신 없음)</option>
-            <option value="ai" ${mode === 'ai' ? 'selected' : ''}>AI 모드 (Claude API)</option>
-          </select></label>
-        <label class="field"><span>Claude API 키 ${hasKey ? badge('저장됨', 'ok') : ''}</span>
-          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="${hasKey ? '변경하려면 새 키 입력' : 'sk-ant-...'}">
-          <small>키는 이 브라우저(localStorage)에만 저장되며 코드·백업 파일에 포함되지 않습니다.</small></label>
+            <option value="ai" ${mode === 'ai' ? 'selected' : ''}>AI 모드 (OpenAI · 서버 경유)</option>
+          </select>
+          <small>AI 모드는 배포된 사이트(또는 wrangler pages dev)에서만 동작합니다. 실패하면 기본 모드로 답합니다.</small></label>
       </div>
       <div class="toolbar" style="margin-top:12px">
         <button class="btn primary" data-act="chat-settings-save">저장</button>
-        ${hasKey ? '<button class="btn danger" data-act="chat-key-delete">API 키 삭제</button>' : ''}
         <button class="btn" data-act="chat-logs-clear">대화 기록 삭제 (${App.data.chatLogs.length}건)</button>
       </div>
-      <p class="note">AI 모드에서는 질문에 필요한 요약 데이터(이름·부서·현장·자격 상태·출역 집계)만 전송하며, 연락처·생년월일·계좌는 전송하지 않습니다.
-        여러 사람이 함께 쓰는 환경이라면 API 키를 서버에 두는 방식을 권장합니다.</p>
+      <p class="note">OpenAI API 키는 서버 환경 변수(OPENAI_API_KEY)로만 관리하며 브라우저·코드·백업 파일에 들어가지 않습니다.
+        AI 모드에서는 질문에 필요한 요약 데이터(이름·부서·현장·자격 상태·출역 집계)만 전송하며, 연락처·생년월일·계좌는 전송하지 않습니다.</p>
     </div>`;
 };
 ACTIONS['data-export'] = () => {
@@ -1297,14 +1294,7 @@ function importData(file) {
 }
 ACTIONS['chat-settings-save'] = () => {
   const mode = document.getElementById('chatModeSel').value;
-  const key = document.getElementById('apiKeyInput').value.trim();
-  if (key) Store.set('apiKey', key);
-  if (mode === 'ai' && !Store.get('apiKey', '')) { toast('AI 모드는 API 키가 필요합니다.'); return; }
   Store.set('chatMode', mode); updateChatMode(); render(); toast('챗봇 설정을 저장했습니다.');
-};
-ACTIONS['chat-key-delete'] = () => {
-  if (!confirm('저장된 API 키를 삭제할까요? 챗봇은 기본 모드로 바뀝니다.')) return;
-  Store.remove('apiKey'); Store.set('chatMode', 'rule'); updateChatMode(); render(); toast('API 키를 삭제했습니다.');
 };
 ACTIONS['chat-logs-clear'] = () => {
   if (!confirm('챗봇 대화 기록을 삭제할까요?')) return;
@@ -1315,7 +1305,7 @@ ACTIONS['chat-logs-clear'] = () => {
 const CHAT_EXAMPLES = ['자격증 만료 예정자 알려줘', '판교 현장 배치 인원 몇 명이야?', '홍길동 이번 달 출역일수는?', '안전교육 미이수자 있어?', '연차 규정 알려줘', '전체 인원 현황'];
 const GENERIC_SITE_WORDS = ['신축공사', '증축공사', '보수공사', '공사', '현장', '신축', '증축', '보수'];
 
-function chatMode() { return Store.get('chatMode', 'rule') === 'ai' && Store.get('apiKey', '') ? 'ai' : 'rule'; }
+function chatMode() { return Store.get('chatMode', 'rule') === 'ai' ? 'ai' : 'rule'; }
 function updateChatMode() { document.getElementById('chatModeLabel').textContent = chatMode() === 'ai' ? 'AI 모드' : '기본 모드'; }
 function targetMonth(q, t) {
   if (/지난\s?달|전월|저번\s?달/.test(q)) return prevMonth(monthOf(t));
@@ -1489,7 +1479,7 @@ function aiContextData() {
   };
 }
 async function aiBot(q) {
-  const key = Store.get('apiKey', '');
+  if (location.protocol === 'file:') throw new Error('파일로 직접 열면 AI 모드를 쓸 수 없음 — 배포 사이트나 wrangler pages dev에서 사용');
   const system = `당신은 건설회사 인사관리시스템의 인사 챗봇입니다. 아래 JSON 데이터만 근거로 한국어로 간결하게 답하세요.
 - 데이터에 없는 내용은 지어내지 말고 "해당 정보를 찾을 수 없습니다"라고 답하세요.
 - 숫자·명단은 데이터에서 정확히 세어 답하세요. 금액은 천 단위 콤마와 '원', 날짜는 YYYY-MM-DD.
@@ -1500,31 +1490,15 @@ async function aiBot(q) {
 [데이터]
 ${JSON.stringify(aiContextData())}`;
   const messages = [...App.chat.turns.slice(-8), { role: 'user', content: q }];
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // API 키는 서버(functions/api/chat.js)에만 있다. 브라우저는 로그인 보호된 /api/chat만 호출한다.
+  const res = await fetch('/api/chat', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2026-10-21',
-      'anthropic-beta': 'server-side-fallback-2026-07-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-opus-5-5',
-      max_tokens: 4000,
-      output_config: { effort: 'low' },
-      fallbacks: 'default',
-      system,
-      messages,
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ system, messages }),
   });
-  if (!res.ok) {
-    const reason = res.status === 401 ? 'API 키 오류' : res.status === 429 ? '요청 한도 초과' : res.status === 529 ? '서버 혼잡' : `오류 ${res.status}`;
-    throw new Error(reason);
-  }
-  const body = await res.json();
-  if (body.stop_reason === 'refusal') return { html: '이 요청에는 답변할 수 없습니다.', text: '이 요청에는 답변할 수 없습니다.' };
-  const text = (body.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim() || '해당 정보를 찾을 수 없습니다.';
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `오류 ${res.status}`);
+  const text = String(body.text || '').trim() || '해당 정보를 찾을 수 없습니다.';
   App.chat.turns.push({ role: 'user', content: q }, { role: 'assistant', content: text });
   return { html: esc(text).replace(/\n/g, '<br>'), text };
 }
