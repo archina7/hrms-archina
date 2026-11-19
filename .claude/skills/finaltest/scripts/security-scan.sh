@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 보안 진단 자동 점검 (Git Bash). 프로젝트 루트에서 실행:
-#   bash .claude/skills/final-check/scripts/security-scan.sh [배포주소]
+#   bash .claude/skills/finaltest/scripts/security-scan.sh [배포주소]
 # 비밀값은 화면에 출력하지 않는다. 키는 앞부분 일부로만 검색한다.
 BASE="${1:-https://hrms-archina.pages.dev}"
 PASS=0; FAIL=0; WARN=0
@@ -28,7 +28,7 @@ N=$(git grep -nE 'sk-(proj-|ant-)?[A-Za-z0-9_-]{20,}' -- ':!*.example' | wc -l)
 echo "[2] 배포 사이트 노출 ($BASE)"
 code() { curl -s -o /dev/null -w "%{http_code}" -H "Accept: text/html" "$BASE$1"; }
 [ "$(code /)" = "302" ] && ok "로그인 없이 / → 로그인 이동" || bad "로그인 없이 / 응답 $(code /) (302 기대)"
-for p in /.dev.vars /.dev.vars.example /.git/config /wrangler.toml /functions/_middleware.js /functions/api/chat.js /.claude/skills/final-check/SKILL.md; do
+for p in /.dev.vars /.dev.vars.example /.git/config /wrangler.toml /functions/_middleware.js /functions/api/chat.js /.claude/skills/finaltest/SKILL.md; do
   c=$(code "$p"); [ "$c" = "404" ] && ok "$p 숨김" || bad "$p 응답 $c (404 기대)"
 done
 for p in /api/me /api/access /api/chat; do

@@ -23,7 +23,7 @@
 │   ├── _middleware.js  # 구글 로그인 + 접근 권한 관리 (/auth/*, /api/me, /api/access)
 │   └── api/chat.js     # 챗봇 AI 모드 → OpenAI 중계 (OPENAI_API_KEY 사용)
 ├── wrangler.toml       # Pages 설정 (출력 폴더, KV 바인딩 ACCESS_KV) — 비밀값 금지
-├── .claude/skills/final-check/  # 최종점검 스킬 (코드리뷰·기능·성능·보안), scripts/에 테스트 스크립트
+├── .claude/skills/finaltest/  # 최종점검 스킬 (코드리뷰·기능·성능·보안), scripts/에 테스트 스크립트
 ├── .dev.vars           # 로컬 비밀값 (git 제외 — 커밋 금지)
 ├── .dev.vars.example   # 비밀값 항목 예시 (실제 값 없음)
 ├── docs/               # 기획·화면 설계 문서
@@ -104,8 +104,8 @@
 - `data/sample.json`은 설정 > JSON 가져오기로 불러올 수 있다.
 
 ## 최종점검 (배포 전)
-- "최종점검" 또는 `/final-check`로 실행 → ① 코드리뷰·수정 ② 기능테스트 ③ 성능테스트(20명 동시) ④ 보안진단
-- 절차와 주의사항은 `.claude/skills/final-check/SKILL.md`, 테스트 스크립트는 같은 폴더 `scripts/`
+- "최종점검" 또는 `/finaltest`로 실행 → ① 코드리뷰·수정 ② 기능테스트 ③ 성능테스트(20명 동시) ④ 보안진단
+- 절차와 주의사항은 `.claude/skills/finaltest/SKILL.md`, 테스트 스크립트는 같은 폴더 `scripts/`
 - 샘플 데이터나 화면을 바꾸면 `scripts/functional-test.mjs`의 기대값(재직 인원·경고 건수 등)도 함께 고친다.
 
 ## 실행 방법

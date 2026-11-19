@@ -1,6 +1,6 @@
 // 권한 저장소(KV) 장애 시뮬레이션: 서버 없이 functions/_middleware.js를 직접 불러 시험한다.
 // 기대: 최고 관리자는 KV가 고장 나도 입장(200), 일반 계정은 503으로 안전하게 막힘.
-// 사용: node .claude/skills/final-check/scripts/kv-outage-test.mjs   (프로젝트 루트에서)
+// 사용: node .claude/skills/finaltest/scripts/kv-outage-test.mjs   (프로젝트 루트에서)
 import fs from 'fs'; import os from 'os'; import path from 'path'; import crypto from 'crypto'; import { pathToFileURL } from 'url';
 const tmp = path.join(os.tmpdir(), `mw-${process.pid}.mjs`);
 fs.copyFileSync('functions/_middleware.js', tmp); // .js → .mjs로 복사해 ESM으로 불러온다

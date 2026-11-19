@@ -1,5 +1,5 @@
 // 접근 관리·권한 보안 테스트 (로컬 wrangler pages dev 대상, 로컬 KV 사용)
-// 사용: PORT=8793 node .claude/skills/final-check/scripts/access-security-test.mjs   (프로젝트 루트에서)
+// 사용: PORT=8793 node .claude/skills/finaltest/scripts/access-security-test.mjs   (프로젝트 루트에서)
 // 세션 쿠키는 .dev.vars의 SESSION_SECRET로 만든다 (로컬 서버도 같은 값을 쓴다).
 import fs from 'fs'; import crypto from 'crypto';
 const O = 'http://127.0.0.1:' + (process.env.PORT || '8793');

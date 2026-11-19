@@ -1,9 +1,9 @@
 ---
-name: final-check
-description: 건설 인사관리시스템(hrms-archina)의 배포 전 최종점검을 4단계로 진행한다 — ① 코드리뷰 후 리뷰 결과대로 수정 ② 기능테스트 ③ 성능테스트(20명 동시접속) ④ 보안진단. 사용자가 "최종점검", "/final-check", "배포 전 점검", "출시 전 검사", "전체 점검해줘", "리뷰하고 테스트까지", "보안진단", "QA 돌려줘"처럼 여러 단계의 점검을 한꺼번에 요청하면 반드시 이 스킬을 사용한다. 단계 하나만 콕 집어 요청해도(예: "성능테스트만 다시") 이 스킬의 해당 단계 절차와 스크립트를 따른다.
+name: finaltest
+description: 건설 인사관리시스템(hrms-archina)의 배포 전 최종점검을 4단계로 진행한다 — ① 코드리뷰 후 리뷰 결과대로 수정 ② 기능테스트 ③ 성능테스트(20명 동시접속) ④ 보안진단. 사용자가 "최종점검", "/finaltest", "Finaltest", "배포 전 점검", "출시 전 검사", "전체 점검해줘", "리뷰하고 테스트까지", "보안진단", "QA 돌려줘"처럼 여러 단계의 점검을 한꺼번에 요청하면 반드시 이 스킬을 사용한다. 단계 하나만 콕 집어 요청해도(예: "성능테스트만 다시") 이 스킬의 해당 단계 절차와 스크립트를 따른다.
 ---
 
-# 최종점검 (final-check)
+# 최종점검 (finaltest)
 
 건설 인사관리시스템을 배포하기 전에 품질·안정성·보안을 한 번에 확인하는 절차다.
 이 프로젝트에서 실제로 해 보고 효과가 확인된 방법만 담았다. 단계마다 결과를 숫자로 남기고,
@@ -51,9 +51,9 @@ npx --no-install wrangler pages dev --port 8792 --persist-to "<scratchpad>/wstat
 로컬 서버(포트 8792)를 띄운 뒤 세 가지를 실행한다.
 
 ```bash
-node .claude/skills/final-check/scripts/functional-test.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe" "<scratchpad>/chrome-ft" "<scratchpad>"
-PORT=8792 node .claude/skills/final-check/scripts/access-security-test.mjs
-node .claude/skills/final-check/scripts/kv-outage-test.mjs
+node .claude/skills/finaltest/scripts/functional-test.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe" "<scratchpad>/chrome-ft" "<scratchpad>"
+PORT=8792 node .claude/skills/finaltest/scripts/access-security-test.mjs
+node .claude/skills/finaltest/scripts/kv-outage-test.mjs
 ```
 
 - `functional-test.mjs` (58개 항목): 헤드리스 Chrome으로 실제 화면을 조작한다. 로그인 보호, 접근 관리 흐름, 대시보드, 사원·현장·자격·근태·급여 CRUD와 검증 규칙, 챗봇 기본·AI 모드(실제 OpenAI 1회 호출), 접근 관리 화면, 설정, 375px 모바일, 콘솔 오류. 스크린샷 `ft-*.png`를 scratchpad에 남긴다.
@@ -69,8 +69,8 @@ node .claude/skills/final-check/scripts/kv-outage-test.mjs
 ## 3단계: 성능테스트 (20명 동시접속)
 
 ```bash
-node .claude/skills/final-check/scripts/load-test-site.mjs
-PORT=8791 node .claude/skills/final-check/scripts/load-test-ai.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe" "<scratchpad>/chrome-load"
+node .claude/skills/finaltest/scripts/load-test-site.mjs
+PORT=8791 node .claude/skills/finaltest/scripts/load-test-ai.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe" "<scratchpad>/chrome-load"
 ```
 
 - **A. 배포 사이트** (`load-test-site.mjs`): 가상 사용자 20명이 60초 동안 접속 흐름을 반복(요청 사이 0.5~1.5초) + 20명 순간 폭주. 약 1,400건, 무료 한도(하루 10만 건)의 1~2%. 로그인 없이 가능한 경로만 측정한다.
@@ -83,7 +83,7 @@ PORT=8791 node .claude/skills/final-check/scripts/load-test-ai.mjs "C:/Program F
 ## 4단계: 보안진단
 
 ```bash
-bash .claude/skills/final-check/scripts/security-scan.sh
+bash .claude/skills/finaltest/scripts/security-scan.sh
 ```
 
 자동 점검 항목: 비밀값 유출(git 이력·추적 파일·기타 파일), `.gitignore`·pre-commit 장치, 배포 사이트의 숨김 파일·API 차단·CSRF·HTTPS, 세션 쿠키 속성, 구글 토큰 검증(`email_verified`, `aud`), 외부 스크립트 버전 고정, 보안 헤더(CSP·클릭재킹 방어·HSTS).
@@ -101,7 +101,7 @@ FAIL은 고친다. WARN(예: 보안 헤더 없음)은 위험도와 해결 방법
 
 ## 마무리
 
-1. `pwsh -File .claude/skills/final-check/scripts/stop-test-servers.ps1` 로 테스트 서버·브라우저 정리 (남은 프로세스 0개 확인).
+1. `pwsh -File .claude/skills/finaltest/scripts/stop-test-servers.ps1` 로 테스트 서버·브라우저 정리 (남은 프로세스 0개 확인).
 2. 고친 것이 있으면 파일을 이름으로 지정해 `git add`하고 커밋한다. 메시지에 `최종점검`을 넣어 다음 점검의 기준점이 되게 한다. pre-commit 장치가 비밀값을 검사한다.
 3. `git push origin main` → Cloudflare 자동 배포. `npx --no-install wrangler pages deployment list --project-name hrms-archina`에서 방금 커밋이 성공했는지 확인하고, `security-scan.sh`의 [2] 배포 사이트 항목을 다시 돌려 보호가 유지되는지 본다.
 4. 아래 형식으로 보고한다.
