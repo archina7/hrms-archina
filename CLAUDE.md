@@ -93,6 +93,10 @@
 | 접속 제한 | `functions/_middleware.js` — 구글 로그인 후 허용 이메일만 접속 |
 
 - `main`에 push하면 Cloudflare가 자동 배포한다. `wrangler pages deploy`로 직접 올리지 않는다.
+- 배포 확인: `npx wrangler pages deployment list --project-name hrms-archina`
+- 접속 허용 이메일 변경 (쉼표 구분, 바꾼 뒤 재배포해야 반영):
+  `printf 'a@gmail.com,b@gmail.com' | npx wrangler pages secret put ALLOWED_EMAILS --project-name hrms-archina`
+- 구글 로그인은 Google Cloud Console의 OAuth 클라이언트 "승인된 JavaScript 원본"에 `https://hrms-archina.pages.dev`가 있어야 동작한다.
 - 비밀값 `GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`(쉼표 구분), `SESSION_SECRET`, `OPENAI_API_KEY`(+선택 `OPENAI_MODEL`)는 Cloudflare 비밀값으로만 둔다. 저장소에 넣지 않는다. 바꾸면 재배포해야 반영된다.
 - OpenAI 키를 Cloudflare에 넣을 때는 키를 명령줄에 쓰지 않고 `.dev.vars`에서 바로 넘긴다:
   `grep '^OPENAI_API_KEY=' .dev.vars | cut -d= -f2- | npx wrangler pages secret put OPENAI_API_KEY --project-name hrms-archina`
